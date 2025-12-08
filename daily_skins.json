@@ -1,0 +1,37 @@
+{
+  "date": "2025-12-08T20:00:00.000Z",
+  "skins": [
+    {
+      "id": "PLANET_OUTFITS",
+      "offerType": "AVATAR_ITEMS_SET",
+      "imageName": "PLANET_OUTFITS",
+      "imageUrl": "https://cdn2.wolvesville.com/promos/PLANET_OUTFITS@2x.jpg",
+      "price": 380,
+      "expireDate": "2025-12-09T03:00:00.000Z"
+    },
+    {
+      "id": "CAT_OUTFITS",
+      "offerType": "AVATAR_ITEMS_SET",
+      "imageName": "CAT_OUTFITS",
+      "imageUrl": "https://cdn2.wolvesville.com/promos/CAT_OUTFITS@2x.jpg",
+      "price": 380,
+      "expireDate": "2025-12-09T03:00:00.000Z"
+    },
+    {
+      "id": "ZODIAC_OUTFITS",
+      "offerType": "AVATAR_ITEMS_SET",
+      "imageName": "ZODIAC_OUTFITS",
+      "imageUrl": "https://cdn2.wolvesville.com/promos/ZODIAC_OUTFITS@2x.jpg",
+      "price": 380,
+      "expireDate": "2025-12-09T03:00:00.000Z"
+    },
+    {
+      "id": "LOLITA_OUTFITS",
+      "offerType": "AVATAR_ITEMS_SET",
+      "imageName": "LOLITA_OUTFITS",
+      "imageUrl": "https://cdn2.wolvesville.com/promos/LOLITA_OUTFITS@2x.jpg",
+      "price": 380,
+      "expireDate": "2025-12-09T03:00:00.000Z"
+    }
+  ]
+}

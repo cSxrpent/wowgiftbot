@@ -55,7 +55,7 @@
     
     { "type": "ROLE_CARDS_1", "cost": 85, "category": "rolecards", "enabled": true },
     { "type": "ROLE_CARDS_2", "cost": 750, "category": "rolecards", "enabled": true },
-    { "type": "ROLE_CARDS_MONTHLY_BUNDLE", "cost": 1250, "category": "rolecards", "enabled": true },
+    { "type": "ROLE_CARDS_MONTHLY_BUNDLE", "cost": 1250, "category": "rolecards", "enabled": true }
     
   ]
 }
