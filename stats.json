@@ -1,0 +1,17 @@
+{
+  "daily": {
+    "date": "Sun Dec 07 2025",
+    "gems": 1850,
+    "transactions": 6
+  },
+  "weekly": {
+    "week": 49,
+    "gems": 2400,
+    "transactions": 8
+  },
+  "monthly": {
+    "month": 11,
+    "gems": 2400,
+    "transactions": 8
+  }
+}
