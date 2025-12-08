@@ -711,6 +711,127 @@ function saveGifts() {
   }
 }
 
+// ==================== DAILY ROTATING SKINS (daily_skins.json) ====================
+async function fetchAndUpdateDailySkins() {
+  try {
+    console.log('🔁 Fetching rotating limited offers for daily skins...');
+
+    // Build headers using current tokens when available
+    const headers = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      'Origin': 'https://www.wolvesville.com',
+      'Referer': 'https://www.wolvesville.com/'
+    };
+
+    if (tokens.idToken) headers['Authorization'] = `Bearer ${tokens.idToken}`;
+    if (tokens.cfJwt) headers['Cf-JWT'] = tokens.cfJwt;
+
+    const resp = await axios.get('https://core.api-wolvesville.com/billing/rotatingLimitedOffers/v2', { headers });
+
+    const offers = resp.data?.offers || [];
+
+    const dailySkins = [];
+    const seenTypes = new Set();
+
+    for (const offer of offers) {
+      if (!offer.itemSets || !Array.isArray(offer.itemSets)) continue;
+
+      // Use offer.type as the identifier for matching gifts.json entries
+      if (seenTypes.has(offer.type)) continue;
+
+      // Take first itemSet as representative
+      const itemSet = offer.itemSets[0];
+      if (!itemSet) continue;
+
+      const imageName = itemSet.imageName || itemSet.id || offer.type;
+      const imageUrl = `https://cdn2.wolvesville.com/promos/${imageName}@2x.jpg`;
+
+      dailySkins.push({
+        id: itemSet.id || offer.type,
+        offerType: offer.type,
+        imageName,
+        imageUrl,
+        price: 380,
+        expireDate: offer.expireDate || null
+      });
+
+      seenTypes.add(offer.type);
+      if (dailySkins.length >= 4) break;
+    }
+
+    // Write daily_skins.json (overwrite)
+    fs.writeFileSync(path.join(botDir, 'daily_skins.json'), JSON.stringify({ date: new Date().toISOString(), skins: dailySkins }, null, 2));
+    console.log(`💾 daily_skins.json written (${dailySkins.length} skins)`);
+
+    // Update giftsData: set enabled=true for skin_set items that match offer types
+    let changed = false;
+    for (const skin of dailySkins) {
+      const match = giftsData.items.find(i => i.type === skin.offerType);
+      if (match && !match.enabled) {
+        match.enabled = true;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      saveGifts();
+      // reload in-memory data to be safe
+      loadGiftsAndCalendars();
+    }
+
+    // Log to configured channel if available
+    try {
+      const embed = new EmbedBuilder()
+        .setTitle('🔁 Daily Skins Updated')
+        .setDescription(`Fetched ${dailySkins.length} daily skins`)
+        .setColor('#00FFFF')
+        .setTimestamp();
+
+      dailySkins.forEach(s => embed.addFields({ name: s.offerType, value: s.imageUrl }));
+      await sendLog(embed);
+    } catch (err) {
+      console.log('ℹ️  Could not send daily skins log (log channel may be missing)');
+    }
+
+    return dailySkins;
+  } catch (error) {
+    console.error('❌ Error fetching rotating offers:', error.response?.data || error.message);
+    return [];
+  }
+}
+
+function scheduleDailySkins() {
+  // Calculate next 03:00 local time
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(3, 0, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+
+  const delay = next - now;
+  console.log(`⏳ Scheduling next daily skin update in ${Math.round(delay / 1000 / 60)} minutes`);
+
+  setTimeout(async function runAndSchedule() {
+    try {
+      await fetchAndUpdateDailySkins();
+    } catch (e) {
+      console.error('❌ Error in scheduled daily skins update:', e.message);
+    }
+    // schedule next in 24h
+    setTimeout(runAndSchedule, 24 * 3600 * 1000);
+  }, delay);
+}
+
+function loadDailySkins() {
+  try {
+    const data = fs.readFileSync(path.join(botDir, 'daily_skins.json'), 'utf8');
+    const parsed = JSON.parse(data);
+    return parsed.skins || [];
+  } catch (err) {
+    return [];
+  }
+}
+
 function formatGiftName(type) {
   return type
     .replace(/_/g, ' ')
@@ -1052,6 +1173,13 @@ client.once('clientReady', async () => {
   loadAccounts();
   loadStats();
   loadGiftsAndCalendars();
+  // Fetch today's rotating skins immediately and schedule daily updates at 03:00
+  try {
+    await fetchAndUpdateDailySkins();
+    scheduleDailySkins();
+  } catch (err) {
+    console.error('❌ Error initializing daily skins:', err.message);
+  }
   
   // Pre-cache channels for single-server optimization
   if (process.env.LOG_CHANNEL_ID) {
@@ -1889,10 +2017,140 @@ client.on('interactionCreate', async interaction => {
       
       await interaction.update({ embeds: [embed], components: rows });
     }
+
+    // Gift page navigation (paginated gifts)
+    if (interaction.customId.startsWith('gift_page|')) {
+      const parts = interaction.customId.split('|');
+      const page = parseInt(parts[1]);
+      const username = parts[2];
+      const playerId = parts[3];
+      const category = parts[4];
+
+      const userBalance = getBalance(interaction.user.id);
+      const gifts = giftsData.items.filter(g => g.enabled && g.category === category);
+      const itemsPerPage = 10;
+      const totalPages = Math.ceil(gifts.length / itemsPerPage);
+      const start = page * itemsPerPage;
+      const end = start + itemsPerPage;
+      const pageGifts = gifts.slice(start, end);
+
+      const dailySkins = loadDailySkins();
+      let thumbnail = null;
+
+      let description = `**Recipient**: ${username}\n**Your balance**: ${userBalance} 💎\n**Page**: ${page + 1}/${totalPages}\n\n`;
+      pageGifts.forEach((g, idx) => {
+        const ds = dailySkins.find(s => s.offerType === g.type);
+        const price = ds ? 380 : g.cost;
+        if (ds && !thumbnail) thumbnail = ds.imageUrl;
+        description += `**${start + idx + 1}.** ${formatGiftName(g.type)} - **${price}💎**\n`;
+      });
+
+      const embed = new EmbedBuilder()
+        .setTitle(`${getCategoryEmoji(category)} ${category.toUpperCase()}`)
+        .setDescription(description)
+        .setColor('#4CAF50')
+        .setTimestamp();
+
+      if (thumbnail) embed.setThumbnail(thumbnail);
+
+      const rows = [];
+      for (let i = 0; i < pageGifts.length; i += 5) {
+        const buttonRow = new ActionRowBuilder();
+        for (let j = 0; j < 5 && i + j < pageGifts.length; j++) {
+          const idx = i + j;
+          const g = pageGifts[idx];
+          const giftNum = start + idx + 1;
+          buttonRow.addComponents(
+            new ButtonBuilder()
+              .setCustomId(`select_gift|${username}|${playerId}|${g.type}`)
+              .setLabel(`${giftNum}`)
+              .setStyle(ButtonStyle.Primary)
+          );
+        }
+        rows.push(buttonRow);
+      }
+
+      const navRow = new ActionRowBuilder();
+      if (page > 0) {
+        navRow.addComponents(
+          new ButtonBuilder()
+            .setCustomId(`gift_page|${page - 1}|${username}|${playerId}|${category}`)
+            .setLabel('◀ Previous')
+            .setStyle(ButtonStyle.Secondary)
+        );
+      }
+      if (page < totalPages - 1) {
+        navRow.addComponents(
+          new ButtonBuilder()
+            .setCustomId(`gift_page|${page + 1}|${username}|${playerId}|${category}`)
+            .setLabel('Next ▶')
+            .setStyle(ButtonStyle.Secondary)
+        );
+      }
+      if (navRow.components.length > 0) rows.push(navRow);
+
+      await interaction.update({ embeds: [embed], components: rows });
+    }
+
+    // User selected a numbered gift
+    if (interaction.customId.startsWith('select_gift|')) {
+      const parts = interaction.customId.split('|');
+      const username = parts[1];
+      const playerId = parts[2];
+      const giftType = parts[3];
+
+      const gift = giftsData.items.find(g => g.type === giftType);
+      if (!gift) return interaction.reply({ content: `❌ Gift not found: ${giftType}`, flags: MessageFlags.Ephemeral });
+      if (gift.category === 'xpbooster') return interaction.reply({ content: `❌ XP Boosters cannot be gifted.`, flags: MessageFlags.Ephemeral });
+
+      const userBalance = getBalance(interaction.user.id);
+      if (userBalance < gift.cost) {
+        return interaction.reply({ content: `❌ Insufficient balance!\n💎 Cost: ${gift.cost} gems\n💰 Your balance: ${userBalance} gems`, flags: MessageFlags.Ephemeral });
+      }
+
+      // Check account gems and switch if needed (same logic as in select menu path)
+      let accountGems = getAccountGemCount();
+      if (accountGems < gift.cost) {
+        const availableAccounts = Object.keys(accounts.accounts).filter(name => name !== accounts.current);
+        let switched = false;
+        for (const accountName of availableAccounts) {
+          const newAccountGems = getAccountGemCount(accountName);
+          if (newAccountGems >= gift.cost) {
+            try {
+              switchAccount(accountName);
+              await refreshTokens();
+              switched = true;
+              break;
+            } catch (e) {
+              console.error('❌ Account switch error:', e.message);
+            }
+          }
+        }
+        if (!switched) {
+          return interaction.reply({ content: `❌ Insufficient gems on all accounts!`, flags: MessageFlags.Ephemeral });
+        }
+      }
+
+      // Show modal for personalized message (reuse same modal customId pattern)
+      const modal = new ModalBuilder()
+        .setCustomId(`gift_message|${username}|${playerId}|${giftType}`)
+        .setTitle('🎁 Personalized Message');
+
+      const messageInput = new TextInputBuilder()
+        .setCustomId('gift_message')
+        .setLabel('Message (optional)')
+        .setStyle(TextInputStyle.Paragraph)
+        .setPlaceholder('Leave empty to use default message')
+        .setRequired(false)
+        .setMaxLength(200);
+
+      modal.addComponents(new ActionRowBuilder().addComponents(messageInput));
+      await interaction.showModal(modal);
+    }
     
     // Gift category buttons (for backward compatibility, but now we use select menu)
-    if (interaction.customId.startsWith('category_')) {
-      const parts = interaction.customId.split('_');
+    if (interaction.customId.startsWith('category|')) {
+      const parts = interaction.customId.split('|');
       const category = parts[1];
       const username = parts[2];
       const playerId = parts[3];
@@ -1964,34 +2222,66 @@ client.on('interactionCreate', async interaction => {
         if (category === 'xpbooster') {
           return interaction.editReply({ content: `❌ XP Boosters cannot be gifted.`, flags: MessageFlags.Ephemeral });
         }
-        // Handle other gift categories - show all enabled gifts, check affordability on purchase
+
+        // Handle other gift categories - show enabled gifts in paginated numbered buttons
         const gifts = giftsData.items.filter(g => g.enabled && g.category === category);
-      
+
         if (gifts.length === 0) {
           return interaction.reply({ content: `❌ No gifts available in this category`, flags: MessageFlags.Ephemeral });
         }
-      
-        const giftOptions = gifts.slice(0, 25).map(gift => ({
-          label: formatGiftName(gift.type),
-          value: gift.type,
-          description: `${gift.cost} gems`,
-          emoji: getCategoryEmoji(gift.category)
-        }));
-      
-        const selectMenu = new StringSelectMenuBuilder()
-          .setCustomId(`gift_select_${username}_${playerId}`)
-          .setPlaceholder('Choose a gift')
-          .addOptions(giftOptions);
-      
-        const row = new ActionRowBuilder().addComponents(selectMenu);
-      
+
+        const itemsPerPage = 10;
+        const totalPages = Math.ceil(gifts.length / itemsPerPage);
+        const pageGifts = gifts.slice(0, itemsPerPage);
+
+        const dailySkins = loadDailySkins();
+        let thumbnail = null;
+
+        let description = `**Recipient**: ${username}\n**Your balance**: ${userBalance} 💎\n**Page**: 1/${totalPages}\n\n`;
+        pageGifts.forEach((g, idx) => {
+          const ds = dailySkins.find(s => s.offerType === g.type);
+          const price = ds ? 380 : g.cost;
+          if (ds && !thumbnail) thumbnail = ds.imageUrl;
+          description += `**${idx + 1}.** ${formatGiftName(g.type)} - **${price}💎**\n`;
+        });
+
         const embed = new EmbedBuilder()
           .setTitle(`${getCategoryEmoji(category)} ${category.toUpperCase()}`)
-          .setDescription(`**Recipient**: ${username}\n**Your balance**: ${userBalance} 💎\n**Available**: ${gifts.length} items`)
+          .setDescription(description)
           .setColor('#4CAF50')
           .setTimestamp();
-      
-        await interaction.reply({ embeds: [embed], components: [row], flags: MessageFlags.Ephemeral });
+
+        if (thumbnail) embed.setThumbnail(thumbnail);
+
+        const rows = [];
+        for (let i = 0; i < pageGifts.length; i += 5) {
+          const buttonRow = new ActionRowBuilder();
+          for (let j = 0; j < 5 && i + j < pageGifts.length; j++) {
+            const idx = i + j;
+            const g = pageGifts[idx];
+            const giftNum = idx + 1;
+            buttonRow.addComponents(
+              new ButtonBuilder()
+                .setCustomId(`select_gift|${username}|${playerId}|${g.type}`)
+                .setLabel(`${giftNum}`)
+                .setStyle(ButtonStyle.Primary)
+            );
+          }
+          rows.push(buttonRow);
+        }
+
+        if (totalPages > 1) {
+          const navRow = new ActionRowBuilder();
+          navRow.addComponents(
+            new ButtonBuilder()
+              .setCustomId(`gift_page|${1}|${username}|${playerId}|${category}`)
+              .setLabel('Next ▶')
+              .setStyle(ButtonStyle.Secondary)
+          );
+          rows.push(navRow);
+        }
+
+        await interaction.reply({ embeds: [embed], components: rows, flags: MessageFlags.Ephemeral });
       }
     }
   }
@@ -2203,55 +2493,40 @@ client.on('interactionCreate', async interaction => {
         const userBalance = getBalance(interaction.user.id);
         const totalGems = getTotalGems();
         
-        // Get all unique categories from gifts.json (excluding calendar since we handle it separately)
-        // Check both user balance and total gems
-        // Show all categories that have enabled gifts, regardless of balance
+        // Get all unique categories from gifts.json (excluding calendar and xpbooster)
+        // Show categories even if their items are currently disabled so users can see available groups
         const categories = [...new Set(giftsData.items
-          .filter(g => g.enabled && g.category !== 'calendar' && g.category !== 'xpbooster')
+          .filter(g => g.category !== 'calendar' && g.category !== 'xpbooster')
           .map(g => g.category))];
-        
+
         // Add calendar category if there are any enabled calendars
         const enabledCalendars = calendarsData.calendars.filter(c => c.enabled);
         if (enabledCalendars.length > 0) {
           categories.push('calendar');
         }
-        
-        if (categories.length === 0) {
-          return interaction.editReply(`❌ No categories available with your balance!\n💎 Your balance: **${userBalance} gems**`);
-        }
-        
-        // Format category names for display
-        const categoryNames = {
-          'skin_set': 'Skin Sets',
-          'lootbox': 'Lootboxes',
-          'coins': 'Coins',
-          'bpcoins': 'Battle Pass Coins',
-          'xpbooster': 'XP Boosters',
-          'rolecards': 'Role Cards',
-          'premium': 'Premium',
-          'emote': 'Emotes',
-          'calendar': 'Calendars'
-        };
-        
-        const categoryOptions = categories.map(cat => ({
-          label: categoryNames[cat] || cat.toUpperCase(),
-          value: cat,
-          description: cat === 'calendar' 
-            ? `${enabledCalendars.length} calendars available`
-            : `${giftsData.items.filter(g => g.enabled && g.category === cat).length} items available`,
-          emoji: getCategoryEmoji(cat)
-        }));
-        
-        const selectMenu = new StringSelectMenuBuilder()
-          .setCustomId(`category_select_${username}_${player.id}`)
-          .setPlaceholder('Choose a category')
-          .addOptions(categoryOptions);
 
-        // If XP Boosters exist but are not giftable, remove them from the select options just in case
-        // (we already excluded 'xpbooster' above, this is an extra safety check)
-        
-        const row = new ActionRowBuilder().addComponents(selectMenu);
-        
+        if (categories.length === 0) {
+          return interaction.editReply(`❌ No categories available.\n💎 Your balance: **${userBalance} gems**`);
+        }
+
+        // Build category buttons (5 per row)
+        const rows = [];
+        let currentRow = new ActionRowBuilder();
+        for (let i = 0; i < categories.length; i++) {
+          const cat = categories[i];
+          currentRow.addComponents(
+            new ButtonBuilder()
+              .setCustomId(`category|${cat}|${player.username}|${player.id}`)
+              .setLabel((getCategoryEmoji(cat) || '') + ' ' + (cat === 'calendar' ? 'Calendars' : cat.replace(/_/g, ' ').toUpperCase()))
+              .setStyle(ButtonStyle.Primary)
+          );
+
+          if (currentRow.components.length >= 5 || i === categories.length - 1) {
+            rows.push(currentRow);
+            currentRow = new ActionRowBuilder();
+          }
+        }
+
         const embed = new EmbedBuilder()
           .setTitle('🎁 Gift Categories')
           .setDescription(
@@ -2262,8 +2537,8 @@ client.on('interactionCreate', async interaction => {
           )
           .setColor('#4CAF50')
           .setTimestamp();
-        
-        await interaction.editReply({ embeds: [embed], components: [row] });
+
+        await interaction.editReply({ embeds: [embed], components: rows });
         
       } catch (error) {
         await interaction.editReply(`❌ Error: ${error.message}`);
