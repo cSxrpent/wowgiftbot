@@ -2075,6 +2075,71 @@ client.on('interactionCreate', async interaction => {
       await interaction.update({ embeds: [embed], components: rows });
     }
 
+    // DAILY SKINS: open daily skins viewer
+    if (interaction.customId.startsWith('daily_skins|')) {
+      const parts = interaction.customId.split('|');
+      const username = parts[1];
+      const playerId = parts[2];
+
+      const skins = loadDailySkins();
+      if (!skins || skins.length === 0) return interaction.reply({ content: '❌ No daily skins available', flags: MessageFlags.Ephemeral });
+
+      const index = 0;
+      const skin = skins[index];
+
+      // Try to find matching gift entry for this skin
+      let matchedGift = null;
+      if (skin) {
+        const candidates = [];
+        if (skin.imageName) candidates.push(String(skin.imageName).toLowerCase());
+        if (skin.id) candidates.push(String(skin.id).toLowerCase());
+        matchedGift = giftsData.items.find(i => {
+          const t = String(i.type).toLowerCase();
+          return candidates.some(c => c && t.includes(c));
+        });
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('🎯 Daily Skins')
+        .setDescription(`${skin.imageName || skin.id || 'Daily Skin'}\n**Price**: ${skin.price} 💎`)
+        .setColor('#00FFFF')
+        .setTimestamp();
+      if (skin.imageUrl) embed.setImage(skin.imageUrl);
+
+      const rows = [];
+      // Navigation row
+      const navRow = new ActionRowBuilder();
+      // Previous (disabled on first)
+      navRow.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`daily_skin_page|${Math.max(0, index - 1)}|${username}|${playerId}`)
+          .setLabel('◀ Previous')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(index === 0)
+      );
+      // Next
+      navRow.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`daily_skin_page|${Math.min(skins.length - 1, index + 1)}|${username}|${playerId}`)
+          .setLabel('Next ▶')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(index >= skins.length - 1)
+      );
+      rows.push(navRow);
+
+      // Gift row
+      const giftRow = new ActionRowBuilder();
+      const giftBtn = new ButtonBuilder()
+        .setCustomId(`daily_skin_gift|${index}|${username}|${playerId}|${matchedGift ? matchedGift.type : ''}`)
+        .setLabel('🎁 Gift')
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(!matchedGift);
+      giftRow.addComponents(giftBtn);
+      rows.push(giftRow);
+
+      await interaction.reply({ embeds: [embed], components: rows, flags: MessageFlags.Ephemeral });
+    }
+
     // Gift page navigation (paginated gifts)
     if (interaction.customId.startsWith('gift_page|')) {
       const parts = interaction.customId.split('|');
@@ -2196,6 +2261,93 @@ client.on('interactionCreate', async interaction => {
       }
 
       // Show modal for personalized message (reuse same modal customId pattern)
+      const modal = new ModalBuilder()
+        .setCustomId(`gift_message|${username}|${playerId}|${giftType}`)
+        .setTitle('🎁 Personalized Message');
+
+      const messageInput = new TextInputBuilder()
+        .setCustomId('gift_message')
+        .setLabel('Message (optional)')
+        .setStyle(TextInputStyle.Paragraph)
+        .setPlaceholder('Leave empty to use default message')
+        .setRequired(false)
+        .setMaxLength(200);
+
+      modal.addComponents(new ActionRowBuilder().addComponents(messageInput));
+      await interaction.showModal(modal);
+    }
+
+    // Daily skin page navigation (show specific index)
+    if (interaction.customId.startsWith('daily_skin_page|')) {
+      const parts = interaction.customId.split('|');
+      const index = parseInt(parts[1]);
+      const username = parts[2];
+      const playerId = parts[3];
+
+      const skins = loadDailySkins();
+      if (!skins || skins.length === 0) return interaction.reply({ content: '❌ No daily skins available', flags: MessageFlags.Ephemeral });
+
+      const i = Math.max(0, Math.min(skins.length - 1, index));
+      const skin = skins[i];
+
+      let matchedGift = null;
+      if (skin) {
+        const candidates = [];
+        if (skin.imageName) candidates.push(String(skin.imageName).toLowerCase());
+        if (skin.id) candidates.push(String(skin.id).toLowerCase());
+        matchedGift = giftsData.items.find(it => {
+          const t = String(it.type).toLowerCase();
+          return candidates.some(c => c && t.includes(c));
+        });
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle('🎯 Daily Skins')
+        .setDescription(`${skin.imageName || skin.id || 'Daily Skin'}\n**Price**: ${skin.price} 💎`)
+        .setColor('#00FFFF')
+        .setTimestamp();
+      if (skin.imageUrl) embed.setImage(skin.imageUrl);
+
+      const rows = [];
+      const navRow = new ActionRowBuilder();
+      navRow.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`daily_skin_page|${Math.max(0, i - 1)}|${username}|${playerId}`)
+          .setLabel('◀ Previous')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(i === 0)
+      );
+      navRow.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`daily_skin_page|${Math.min(skins.length - 1, i + 1)}|${username}|${playerId}`)
+          .setLabel('Next ▶')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(i >= skins.length - 1)
+      );
+      rows.push(navRow);
+
+      const giftRow = new ActionRowBuilder();
+      const giftBtn = new ButtonBuilder()
+        .setCustomId(`daily_skin_gift|${i}|${username}|${playerId}|${matchedGift ? matchedGift.type : ''}`)
+        .setLabel('🎁 Gift')
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(!matchedGift);
+      giftRow.addComponents(giftBtn);
+      rows.push(giftRow);
+
+      await interaction.update({ embeds: [embed], components: rows });
+    }
+
+    // Daily skin gift button -> open the same gift modal used elsewhere
+    if (interaction.customId.startsWith('daily_skin_gift|')) {
+      const parts = interaction.customId.split('|');
+      const index = parseInt(parts[1]);
+      const username = parts[2];
+      const playerId = parts[3];
+      const giftType = parts[4];
+
+      if (!giftType || giftType.trim() === '') return interaction.reply({ content: '❌ This daily skin is not available for gifting.', flags: MessageFlags.Ephemeral });
+
       const modal = new ModalBuilder()
         .setCustomId(`gift_message|${username}|${playerId}|${giftType}`)
         .setTitle('🎁 Personalized Message');
@@ -2574,6 +2726,13 @@ client.on('interactionCreate', async interaction => {
           .filter(g => g.category !== 'calendar' && g.category !== 'xpbooster')
           .map(g => g.category))];
 
+        // If we have daily skins available, add a special category button
+        const todaySkins = loadDailySkins();
+        if (todaySkins && todaySkins.length > 0) {
+          // Put daily_skins at the beginning so it's visible
+          if (!categories.includes('daily_skins')) categories.unshift('daily_skins');
+        }
+
         // Add calendar category if there are any enabled calendars
         const enabledCalendars = calendarsData.calendars.filter(c => c.enabled);
         if (enabledCalendars.length > 0) {
@@ -2589,12 +2748,22 @@ client.on('interactionCreate', async interaction => {
         let currentRow = new ActionRowBuilder();
         for (let i = 0; i < categories.length; i++) {
           const cat = categories[i];
-          currentRow.addComponents(
-            new ButtonBuilder()
-              .setCustomId(`category|${cat}|${player.username}|${player.id}`)
-              .setLabel((getCategoryEmoji(cat) || '') + ' ' + (cat === 'calendar' ? 'Calendars' : cat.replace(/_/g, ' ').toUpperCase()))
-              .setStyle(ButtonStyle.Primary)
-          );
+          // Special handling for daily_skins button
+          if (cat === 'daily_skins') {
+            currentRow.addComponents(
+              new ButtonBuilder()
+                .setCustomId(`daily_skins|${player.username}|${player.id}`)
+                .setLabel('🎯 Daily Skins')
+                .setStyle(ButtonStyle.Primary)
+            );
+          } else {
+            currentRow.addComponents(
+              new ButtonBuilder()
+                .setCustomId(`category|${cat}|${player.username}|${player.id}`)
+                .setLabel((getCategoryEmoji(cat) || '') + ' ' + (cat === 'calendar' ? 'Calendars' : cat.replace(/_/g, ' ').toUpperCase()))
+                .setStyle(ButtonStyle.Primary)
+            );
+          }
 
           if (currentRow.components.length >= 5 || i === categories.length - 1) {
             rows.push(currentRow);
