@@ -732,31 +732,43 @@ async function fetchAndUpdateDailySkins() {
     const offers = resp.data?.offers || [];
 
     const dailySkins = [];
-    const seenTypes = new Set();
+    const seenIds = new Set();
+    const now = Date.now();
 
+    // Only consider rotating offers that represent avatar item sets and that expire within 24h
     for (const offer of offers) {
       if (!offer.itemSets || !Array.isArray(offer.itemSets)) continue;
 
-      // Use offer.type as the identifier for matching gifts.json entries
-      if (seenTypes.has(offer.type)) continue;
+      if (offer.type !== 'AVATAR_ITEMS_SET') continue;
 
-      // Take first itemSet as representative
-      const itemSet = offer.itemSets[0];
-      if (!itemSet) continue;
+      const expireTs = offer.expireDate ? new Date(offer.expireDate).getTime() : null;
+      if (!expireTs) continue;
 
-      const imageName = itemSet.imageName || itemSet.id || offer.type;
-      const imageUrl = `https://cdn2.wolvesville.com/promos/${imageName}@2x.jpg`;
+      // skip offers that last more than 24 hours (we only want 1-day rotating skins)
+      if (expireTs - now > 24 * 3600 * 1000) continue;
 
-      dailySkins.push({
-        id: itemSet.id || offer.type,
-        offerType: offer.type,
-        imageName,
-        imageUrl,
-        price: 380,
-        expireDate: offer.expireDate || null
-      });
+      // iterate all itemSets inside this offer
+      for (const itemSet of offer.itemSets) {
+        if (!itemSet) continue;
+        const keyId = itemSet.id || itemSet.imageName || JSON.stringify(itemSet.avatarItemIds || []);
+        if (seenIds.has(keyId)) continue;
 
-      seenTypes.add(offer.type);
+        const imageName = itemSet.imageName || itemSet.id;
+        const imageUrl = imageName ? `https://cdn2.wolvesville.com/promos/${imageName}@2x.jpg` : null;
+
+        dailySkins.push({
+          id: itemSet.id,
+          offerType: offer.type,
+          imageName: itemSet.imageName || null,
+          imageUrl,
+          price: 380,
+          expireDate: offer.expireDate || null
+        });
+
+        seenIds.add(keyId);
+        if (dailySkins.length >= 4) break;
+      }
+
       if (dailySkins.length >= 4) break;
     }
 
@@ -764,10 +776,19 @@ async function fetchAndUpdateDailySkins() {
     fs.writeFileSync(path.join(botDir, 'daily_skins.json'), JSON.stringify({ date: new Date().toISOString(), skins: dailySkins }, null, 2));
     console.log(`💾 daily_skins.json written (${dailySkins.length} skins)`);
 
-    // Update giftsData: set enabled=true for skin_set items that match offer types
+    // Update giftsData: set enabled=true for skin_set items that match today's skins
+    // Try to match by gift.type containing the imageName or the itemSet id
     let changed = false;
     for (const skin of dailySkins) {
-      const match = giftsData.items.find(i => i.type === skin.offerType);
+      if (!skin) continue;
+      const candidates = [];
+      if (skin.imageName) candidates.push(skin.imageName.toLowerCase());
+      if (skin.id) candidates.push(String(skin.id).toLowerCase());
+      // find a gift whose type contains any candidate substring
+      const match = giftsData.items.find(i => {
+        const t = String(i.type).toLowerCase();
+        return candidates.some(c => c && t.includes(c));
+      });
       if (match && !match.enabled) {
         match.enabled = true;
         changed = true;
@@ -788,7 +809,7 @@ async function fetchAndUpdateDailySkins() {
         .setColor('#00FFFF')
         .setTimestamp();
 
-      dailySkins.forEach(s => embed.addFields({ name: s.offerType, value: s.imageUrl }));
+      dailySkins.forEach(s => embed.addFields({ name: s.imageName || s.id || 'skin', value: s.imageUrl || 'n/a' }));
       await sendLog(embed);
     } catch (err) {
       console.log('ℹ️  Could not send daily skins log (log channel may be missing)');
@@ -1119,6 +1140,10 @@ const commands = [
   {
     name: 'refresh-tokens',
     description: 'Manually refresh Wolvesville tokens (Admin)'
+  },
+  {
+    name: 'refresh-daily-skins',
+    description: 'Force refresh daily rotating skins (Admin)'
   },
   {
     name: 'add-account',
@@ -1528,6 +1553,36 @@ client.on('interactionCreate', async interaction => {
         }
       } catch (error) {
         await interaction.editReply(`❌ Error: ${error.message}`);
+      }
+    }
+
+    if (commandName === 'refresh-daily-skins') {
+      if (!isAdmin) return interaction.reply({ content: '❌ Permission denied!', flags: MessageFlags.Ephemeral });
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      try {
+        console.log('🔁 Manual daily skins refresh requested by', interaction.user.tag);
+        const skins = await fetchAndUpdateDailySkins();
+
+        const embed = new EmbedBuilder()
+          .setTitle('🔁 Daily Skins Refreshed')
+          .setDescription(`Fetched ${skins.length} daily skins`)
+          .setColor('#00FFFF')
+          .setTimestamp();
+
+        await interaction.editReply({ embeds: [embed] });
+
+        const logEmbed = new EmbedBuilder()
+          .setTitle('🔁 Daily Skins Manually Refreshed')
+          .setDescription(`**Admin**: ${interaction.user.tag}\n**Count**: ${skins.length}`)
+          .setColor('#00FFFF')
+          .setTimestamp();
+
+        await sendLog(logEmbed);
+      } catch (error) {
+        console.error('❌ Error during manual daily skins refresh:', error.message);
+        await interaction.editReply({ content: `❌ Error: ${error.message}` });
       }
     }
     
@@ -2041,7 +2096,14 @@ client.on('interactionCreate', async interaction => {
 
       let description = `**Recipient**: ${username}\n**Your balance**: ${userBalance} 💎\n**Page**: ${page + 1}/${totalPages}\n\n`;
       pageGifts.forEach((g, idx) => {
-        const ds = dailySkins.find(s => s.offerType === g.type);
+        // Match daily skin by imageName or id against gift type
+        const ds = dailySkins.find(s => {
+          const candidates = [];
+          if (s.imageName) candidates.push(String(s.imageName).toLowerCase());
+          if (s.id) candidates.push(String(s.id).toLowerCase());
+          const tt = String(g.type).toLowerCase();
+          return candidates.some(c => c && tt.includes(c));
+        });
         const price = ds ? 380 : g.cost;
         if (ds && !thumbnail) thumbnail = ds.imageUrl;
         description += `**${start + idx + 1}.** ${formatGiftName(g.type)} - **${price}💎**\n`;
@@ -2243,7 +2305,13 @@ client.on('interactionCreate', async interaction => {
 
         let description = `**Recipient**: ${username}\n**Your balance**: ${userBalance} 💎\n**Page**: 1/${totalPages}\n\n`;
         pageGifts.forEach((g, idx) => {
-          const ds = dailySkins.find(s => s.offerType === g.type);
+          const ds = dailySkins.find(s => {
+            const candidates = [];
+            if (s.imageName) candidates.push(String(s.imageName).toLowerCase());
+            if (s.id) candidates.push(String(s.id).toLowerCase());
+            const tt = String(g.type).toLowerCase();
+            return candidates.some(c => c && tt.includes(c));
+          });
           const price = ds ? 380 : g.cost;
           if (ds && !thumbnail) thumbnail = ds.imageUrl;
           description += `**${idx + 1}.** ${formatGiftName(g.type)} - **${price}💎**\n`;
