@@ -700,6 +700,17 @@ function loadGiftsAndCalendars() {
   }
 }
 
+function saveGifts() {
+  try {
+    fs.writeFileSync(path.join(botDir, 'gifts.json'), JSON.stringify(giftsData, null, 2));
+    console.log('💾 gifts.json saved');
+    return true;
+  } catch (error) {
+    console.error('❌ Error saving gifts.json:', error.message);
+    return false;
+  }
+}
+
 function formatGiftName(type) {
   return type
     .replace(/_/g, ' ')
@@ -808,6 +819,12 @@ async function sendGift(playerId, giftType, message, calendarId = null, retryCou
     }
     
     const gift = giftsData.items.find(g => g.type === giftType) || calendarsData.calendars.find(c => c.id === calendarId);
+    // Safety: prevent sending XP Boosters
+    if (gift && gift.category === 'xpbooster') {
+      const err = new Error('XP Boosters cannot be gifted');
+      err.statusCode = 400;
+      throw err;
+    }
     const cost = gift ? gift.cost : 0;
     
     const body = {
@@ -989,6 +1006,14 @@ const commands = [
       { name: 'email', type: 3, description: 'Wolvesville email', required: true },
       { name: 'password', type: 3, description: 'Wolvesville password', required: true },
       { name: 'name', type: 3, description: 'Account name/identifier', required: true }
+    ]
+  },
+  {
+    name: 'set-skin',
+    description: 'Enable/disable a skin in gifts.json (Admin)',
+    options: [
+      { name: 'type', type: 3, description: 'Gift type identifier (type)', required: true },
+      { name: 'enabled', type: 5, description: 'Enable (true) or disable (false)', required: true }
     ]
   },
   {
@@ -1417,6 +1442,42 @@ client.on('interactionCreate', async interaction => {
         await interaction.editReply(`❌ Error: ${error.message}`);
       }
     }
+
+    if (commandName === 'set-skin') {
+      if (!isAdmin) return interaction.reply({ content: '❌ Permission denied!', flags: MessageFlags.Ephemeral });
+
+      const type = interaction.options.getString('type').trim();
+      const enabled = interaction.options.getBoolean('enabled');
+
+      try {
+        const gift = giftsData.items.find(g => g.type === type);
+        if (!gift) return interaction.reply({ content: `❌ Skin type not found: ${type}`, flags: MessageFlags.Ephemeral });
+        if (gift.category !== 'skin_set') return interaction.reply({ content: `❌ This command only works for skin_set items.`, flags: MessageFlags.Ephemeral });
+
+        gift.enabled = !!enabled;
+        const saved = saveGifts();
+        if (!saved) return interaction.reply({ content: '❌ Failed to save gifts.json', flags: MessageFlags.Ephemeral });
+
+        // Reload in-memory data
+        loadGiftsAndCalendars();
+
+        const embed = new EmbedBuilder()
+          .setTitle('✅ Skin Updated')
+          .setDescription(`**Type**: ${type}\n**Enabled**: ${gift.enabled}`)
+          .setColor(gift.enabled ? '#00FF00' : '#FF6B6B')
+          .setTimestamp();
+
+        await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        const logEmbed = new EmbedBuilder()
+          .setTitle('🔄 Skin Toggled')
+          .setDescription(`**Admin**: ${interaction.user.tag}\n**Type**: ${type}\n**Enabled**: ${gift.enabled}`)
+          .setColor('#00FF00')
+          .setTimestamp();
+        await sendLog(logEmbed);
+      } catch (error) {
+        await interaction.reply({ content: `❌ Error: ${error.message}`, flags: MessageFlags.Ephemeral });
+      }
+    }
     
     if (commandName === 'list-accounts') {
       if (!isAdmin) return interaction.reply({ content: '❌ Permission denied!', flags: MessageFlags.Ephemeral });
@@ -1684,6 +1745,71 @@ client.on('interactionCreate', async interaction => {
       await interaction.showModal(modal);
     }
     
+    // Calendar selection button
+    if (interaction.customId.startsWith('select_cal|')) {
+      const parts = interaction.customId.split('|');
+      const username = parts[1];
+      const playerId = parts[2];
+      const calendarId = parts[3];
+      
+      const calendar = calendarsData.calendars.find(c => c.id === calendarId);
+      
+      if (!calendar) {
+        return interaction.reply({ content: `❌ Calendar not found`, flags: MessageFlags.Ephemeral });
+      }
+      
+      const userBalance = getBalance(interaction.user.id);
+      
+      if (userBalance < calendar.cost) {
+        return interaction.reply({ content: `❌ Insufficient balance!\n💎 Cost: ${calendar.cost} gems\n💰 Your balance: ${userBalance} gems`, flags: MessageFlags.Ephemeral });
+      }
+      
+      // Check account gems and switch if needed
+      let accountGems = getAccountGemCount();
+      if (accountGems < calendar.cost) {
+        // Try to switch to an account with enough gems
+        const availableAccounts = Object.keys(accounts.accounts).filter(name => name !== accounts.current);
+        let switched = false;
+        
+        for (const accountName of availableAccounts) {
+          const newAccountGems = getAccountGemCount(accountName);
+          if (newAccountGems >= calendar.cost) {
+            try {
+              switchAccount(accountName);
+              await refreshTokens();
+              console.log(`✅ Switched to account ${accountName} (${newAccountGems} gems) for calendar purchase`);
+              switched = true;
+              break;
+            } catch (switchError) {
+              console.error(`❌ Error switching to account ${accountName}:`, switchError.message);
+            }
+          }
+        }
+        
+        if (!switched) {
+          return interaction.reply({ content: `❌ Insufficient gems on all accounts!\n💎 Cost: ${calendar.cost} gems\n💰 Current account (${accounts.current}): ${accountGems} gems`, flags: MessageFlags.Ephemeral });
+        }
+      }
+      
+      // Show modal for personalized message
+      const modal = new ModalBuilder()
+        .setCustomId(`calendar_message|${username}|${playerId}|${calendarId}`)
+        .setTitle('📅 Personalized Message');
+        
+      const messageInput = new TextInputBuilder()
+        .setCustomId('gift_message')
+        .setLabel('Message (optional)')
+        .setStyle(TextInputStyle.Paragraph)
+        .setPlaceholder('Leave empty to use default message')
+        .setRequired(false)
+        .setMaxLength(200);
+      
+      const row = new ActionRowBuilder().addComponents(messageInput);
+      modal.addComponents(row);
+        
+      await interaction.showModal(modal);
+    }
+    
     
     // Calendar navigation
     if (interaction.customId.startsWith('cal_page_')) {
@@ -1694,7 +1820,8 @@ client.on('interactionCreate', async interaction => {
       
       const userBalance = getBalance(interaction.user.id);
       const totalGems = getTotalGems();
-      const enabledCalendars = calendarsData.calendars.filter(c => c.enabled && c.cost <= userBalance && c.cost <= totalGems);
+      // Show all enabled calendars (do not filter by user's balance here)
+      const enabledCalendars = calendarsData.calendars.filter(c => c.enabled);
       
       const itemsPerPage = 10;
       const totalPages = Math.ceil(enabledCalendars.length / itemsPerPage);
@@ -1714,19 +1841,26 @@ client.on('interactionCreate', async interaction => {
         .setColor('#4CAF50')
         .setTimestamp();
       
-      const selectOptions = pageCalendars.map((cal, idx) => ({
-        label: `${start + idx + 1}. ${cal.title}`,
-        value: cal.id,
-        description: `${cal.cost} gems`,
-        emoji: '📅'
-      }));
+      // Create numbered buttons for calendars (max 10 per page)
+      const rows = [];
       
-      const selectMenu = new StringSelectMenuBuilder()
-        .setCustomId(`calendar_select_${username}_${playerId}`)
-        .setPlaceholder('Choose a calendar')
-        .addOptions(selectOptions);
-      
-      const rows = [new ActionRowBuilder().addComponents(selectMenu)];
+      // Split buttons into rows of 5
+      for (let i = 0; i < pageCalendars.length; i += 5) {
+        const buttonRow = new ActionRowBuilder();
+        for (let j = 0; j < 5 && i + j < pageCalendars.length; j++) {
+          const idx = i + j;
+          const cal = pageCalendars[idx];
+          const calendarNum = start + idx + 1;
+          
+          buttonRow.addComponents(
+            new ButtonBuilder()
+              .setCustomId(`select_cal|${username}|${playerId}|${cal.id}`)
+              .setLabel(`${calendarNum}`)
+              .setStyle(ButtonStyle.Primary)
+          );
+        }
+        rows.push(buttonRow);
+      }
       
       // Navigation buttons
       const navRow = new ActionRowBuilder();
@@ -1736,7 +1870,7 @@ client.on('interactionCreate', async interaction => {
           new ButtonBuilder()
             .setCustomId(`cal_page_${page - 1}_${username}_${playerId}`)
             .setLabel('◀ Previous')
-            .setStyle(ButtonStyle.Primary)
+            .setStyle(ButtonStyle.Secondary)
         );
       }
       
@@ -1745,7 +1879,7 @@ client.on('interactionCreate', async interaction => {
           new ButtonBuilder()
             .setCustomId(`cal_page_${page + 1}_${username}_${playerId}`)
             .setLabel('Next ▶')
-            .setStyle(ButtonStyle.Primary)
+            .setStyle(ButtonStyle.Secondary)
         );
       }
       
@@ -1791,60 +1925,71 @@ client.on('interactionCreate', async interaction => {
           .setColor('#4CAF50')
           .setTimestamp();
         
-        const selectOptions = pageCalendars.map((cal, idx) => ({
-          label: `${idx + 1}. ${cal.title}`,
-          value: cal.id,
-          description: `${cal.cost} gems`,
-          emoji: '📅'
-        }));
+        // Create numbered buttons for calendars (max 10 per page)
+        const rows = [];
         
-        const selectMenu = new StringSelectMenuBuilder()
-          .setCustomId(`calendar_select_${username}_${playerId}`)
-          .setPlaceholder('Choose a calendar')
-          .addOptions(selectOptions);
+        // Split buttons into rows of 5
+        for (let i = 0; i < pageCalendars.length; i += 5) {
+          const buttonRow = new ActionRowBuilder();
+          for (let j = 0; j < 5 && i + j < pageCalendars.length; j++) {
+            const idx = i + j;
+            const cal = pageCalendars[idx];
+            const calendarNum = idx + 1;
+            
+            buttonRow.addComponents(
+              new ButtonBuilder()
+                .setCustomId(`select_cal|${username}|${playerId}|${cal.id}`)
+                .setLabel(`${calendarNum}`)
+                .setStyle(ButtonStyle.Primary)
+            );
+          }
+          rows.push(buttonRow);
+        }
         
-        const rows = [new ActionRowBuilder().addComponents(selectMenu)];
-        
-        // Bouton suivant si plus d'une page
+        // Navigation buttons if more than one page
         if (totalPages > 1) {
           const navRow = new ActionRowBuilder()
             .addComponents(
               new ButtonBuilder()
                 .setCustomId(`cal_page_1_${username}_${playerId}`)
                 .setLabel('Next ▶')
-                .setStyle(ButtonStyle.Primary)
+                .setStyle(ButtonStyle.Secondary)
             );
           rows.push(navRow);
         }
         
         await interaction.reply({ embeds: [embed], components: rows, flags: MessageFlags.Ephemeral });
       } else {
+        // Block XP Boosters category entirely — they cannot be gifted
+        if (category === 'xpbooster') {
+          return interaction.editReply({ content: `❌ XP Boosters cannot be gifted.`, flags: MessageFlags.Ephemeral });
+        }
         // Handle other gift categories - show all enabled gifts, check affordability on purchase
         const gifts = giftsData.items.filter(g => g.enabled && g.category === category);
       
-      if (gifts.length === 0) {
+        if (gifts.length === 0) {
           return interaction.reply({ content: `❌ No gifts available in this category`, flags: MessageFlags.Ephemeral });
-      }
+        }
       
-      const giftOptions = gifts.slice(0, 25).map(gift => ({
-        label: formatGiftName(gift.type),
-        value: gift.type,
+        const giftOptions = gifts.slice(0, 25).map(gift => ({
+          label: formatGiftName(gift.type),
+          value: gift.type,
           description: `${gift.cost} gems`,
-        emoji: getCategoryEmoji(gift.category)
-      }));
+          emoji: getCategoryEmoji(gift.category)
+        }));
       
-      const selectMenu = new StringSelectMenuBuilder()
-        .setCustomId(`gift_select_${username}_${playerId}`)
+        const selectMenu = new StringSelectMenuBuilder()
+          .setCustomId(`gift_select_${username}_${playerId}`)
           .setPlaceholder('Choose a gift')
-        .addOptions(giftOptions);
+          .addOptions(giftOptions);
       
-      const row = new ActionRowBuilder().addComponents(selectMenu);
+        const row = new ActionRowBuilder().addComponents(selectMenu);
       
-      const embed = new EmbedBuilder()
-        .setTitle(`${getCategoryEmoji(category)} ${category.toUpperCase()}`)
+        const embed = new EmbedBuilder()
+          .setTitle(`${getCategoryEmoji(category)} ${category.toUpperCase()}`)
           .setDescription(`**Recipient**: ${username}\n**Your balance**: ${userBalance} 💎\n**Available**: ${gifts.length} items`)
-        .setColor('#4CAF50')
-        .setTimestamp();
+          .setColor('#4CAF50')
+          .setTimestamp();
       
         await interaction.reply({ embeds: [embed], components: [row], flags: MessageFlags.Ephemeral });
       }
@@ -2062,7 +2207,7 @@ client.on('interactionCreate', async interaction => {
         // Check both user balance and total gems
         // Show all categories that have enabled gifts, regardless of balance
         const categories = [...new Set(giftsData.items
-          .filter(g => g.enabled && g.category !== 'calendar')
+          .filter(g => g.enabled && g.category !== 'calendar' && g.category !== 'xpbooster')
           .map(g => g.category))];
         
         // Add calendar category if there are any enabled calendars
@@ -2101,6 +2246,9 @@ client.on('interactionCreate', async interaction => {
           .setCustomId(`category_select_${username}_${player.id}`)
           .setPlaceholder('Choose a category')
           .addOptions(categoryOptions);
+
+        // If XP Boosters exist but are not giftable, remove them from the select options just in case
+        // (we already excluded 'xpbooster' above, this is an extra safety check)
         
         const row = new ActionRowBuilder().addComponents(selectMenu);
         
@@ -2138,6 +2286,11 @@ client.on('interactionCreate', async interaction => {
       const userBalance = getBalance(interaction.user.id);
       const totalGems = getTotalGems();
       
+      // Block XP Boosters selection
+      if (category === 'xpbooster') {
+        return interaction.editReply(`❌ XP Boosters cannot be gifted.`);
+      }
+
       // Handle calendar category separately - show all enabled calendars
       if (category === 'calendar') {
         const enabledCalendars = calendarsData.calendars.filter(c => c.enabled);
@@ -2163,32 +2316,35 @@ client.on('interactionCreate', async interaction => {
           .setColor('#4CAF50')
           .setTimestamp();
         
-        const selectOptions = pageCalendars.map((cal, idx) => ({
-          label: `${idx + 1}. ${cal.title}`,
-          value: cal.id,
-          description: `${cal.cost} gems`,
-          emoji: '📅'
-        }));
-        
-        const selectMenu = new StringSelectMenuBuilder()
-          .setCustomId(`calendar_select_${username}_${playerId}`)
-          .setPlaceholder('Choose a calendar')
-          .addOptions(selectOptions);
-        
-        const rows = [new ActionRowBuilder().addComponents(selectMenu)];
-        
-        // Bouton suivant si plus d'une page
+        // Create numbered buttons for calendars (max 10 per page)
+        const rows = [];
+        for (let i = 0; i < pageCalendars.length; i += 5) {
+          const buttonRow = new ActionRowBuilder();
+          for (let j = 0; j < 5 && i + j < pageCalendars.length; j++) {
+            const idx = i + j;
+            const cal = pageCalendars[idx];
+            const calendarNum = idx + 1;
+            buttonRow.addComponents(
+              new ButtonBuilder()
+                .setCustomId(`select_cal|${username}|${playerId}|${cal.id}`)
+                .setLabel(`${calendarNum}`)
+                .setStyle(ButtonStyle.Primary)
+            );
+          }
+          rows.push(buttonRow);
+        }
+
         if (totalPages > 1) {
           const navRow = new ActionRowBuilder()
             .addComponents(
               new ButtonBuilder()
                 .setCustomId(`cal_page_1_${username}_${playerId}`)
                 .setLabel('Next ▶')
-                .setStyle(ButtonStyle.Primary)
+                .setStyle(ButtonStyle.Secondary)
             );
           rows.push(navRow);
         }
-        
+
         await interaction.editReply({ embeds: [embed], components: rows });
       } else {
         // Handle other gift categories - show all enabled gifts, check affordability on purchase
@@ -2196,7 +2352,7 @@ client.on('interactionCreate', async interaction => {
         
         if (gifts.length === 0) {
           return interaction.editReply({ content: `❌ No gifts available in this category`, flags: MessageFlags.Ephemeral });
-      }
+        }
         
         const giftOptions = gifts.slice(0, 25).map(gift => ({
           label: formatGiftName(gift.type),
@@ -2233,6 +2389,11 @@ client.on('interactionCreate', async interaction => {
       
       if (!gift) {
         return interaction.reply({ content: `❌ Gift type not found: ${giftType}`, flags: MessageFlags.Ephemeral });
+      }
+
+      // Prevent gifting XP Boosters
+      if (gift.category === 'xpbooster') {
+        return interaction.reply({ content: `❌ XP Boosters cannot be gifted.`, flags: MessageFlags.Ephemeral });
       }
       
       const userBalance = getBalance(interaction.user.id);
@@ -2273,72 +2434,6 @@ client.on('interactionCreate', async interaction => {
       const modal = new ModalBuilder()
         .setCustomId(`gift_message|${username}|${playerId}|${giftType}`)
         .setTitle('🎁 Personalized Message');
-        
-      const messageInput = new TextInputBuilder()
-        .setCustomId('gift_message')
-        .setLabel('Message (optional)')
-        .setStyle(TextInputStyle.Paragraph)
-        .setPlaceholder('Leave empty to use default message')
-        .setRequired(false)
-        .setMaxLength(200);
-      
-      const row = new ActionRowBuilder().addComponents(messageInput);
-      modal.addComponents(row);
-        
-      await interaction.showModal(modal);
-    }
-    
-    // Calendar selection
-    if (interaction.customId.startsWith('calendar_select_')) {
-      const parts = interaction.customId.split('_');
-      const username = parts[2];
-      const playerId = parts[3];
-      
-      const calendarId = interaction.values[0];
-      const calendar = calendarsData.calendars.find(c => c.id === calendarId);
-      
-      if (!calendar) {
-        return interaction.reply({ content: `❌ Calendar not found: ${calendarId}`, flags: MessageFlags.Ephemeral });
-      }
-      
-      const userBalance = getBalance(interaction.user.id);
-      
-      if (userBalance < calendar.cost) {
-        return interaction.reply({ content: `❌ Insufficient balance!\n💎 Cost: ${calendar.cost} gems\n💰 Your balance: ${userBalance} gems`, flags: MessageFlags.Ephemeral });
-      }
-      
-      // Check account gems and switch if needed
-      let accountGems = getAccountGemCount();
-      if (accountGems < calendar.cost) {
-        // Try to switch to an account with enough gems
-        const availableAccounts = Object.keys(accounts.accounts).filter(name => name !== accounts.current);
-        let switched = false;
-        
-        for (const accountName of availableAccounts) {
-          const newAccountGems = getAccountGemCount(accountName);
-          if (newAccountGems >= calendar.cost) {
-            try {
-              switchAccount(accountName);
-              await refreshTokens();
-              console.log(`✅ Switched to account ${accountName} (${newAccountGems} gems) for calendar purchase`);
-              switched = true;
-              break;
-            } catch (switchError) {
-              console.error(`❌ Error switching to account ${accountName}:`, switchError.message);
-            }
-          }
-        }
-        
-        if (!switched) {
-          return interaction.reply({ content: `❌ Insufficient gems on all accounts!\n💎 Cost: ${calendar.cost} gems\n💰 Current account (${accounts.current}): ${accountGems} gems`, flags: MessageFlags.Ephemeral });
-        }
-      }
-      
-      // Show modal for personalized message
-      // Use | as delimiter to avoid issues with underscores
-      const modal = new ModalBuilder()
-        .setCustomId(`calendar_message|${username}|${playerId}|${calendarId}`)
-        .setTitle('📅 Personalized Message');
         
       const messageInput = new TextInputBuilder()
         .setCustomId('gift_message')
