@@ -1460,6 +1460,8 @@ client.on('interactionCreate', async interaction => {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         
         const channel = await getGiftChannel();
+        // Ensure latest gifts/calendars loaded
+        loadGiftsAndCalendars();
         
         const embed = new EmbedBuilder()
           .setTitle('🎁 Wolvesville Gift System')
@@ -2150,6 +2152,8 @@ client.on('interactionCreate', async interaction => {
     
     // Gift category buttons (for backward compatibility, but now we use select menu)
     if (interaction.customId.startsWith('category|')) {
+      loadGiftsAndCalendars();
+      
       const parts = interaction.customId.split('|');
       const category = parts[1];
       const username = parts[2];
@@ -2484,6 +2488,9 @@ client.on('interactionCreate', async interaction => {
       }
       
       try {
+        // Reload to ensure latest data (files may have changed since bot start)
+        loadGiftsAndCalendars();
+        
         const player = await searchPlayer(username);
         
         if (!player) {
