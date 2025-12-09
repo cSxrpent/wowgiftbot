@@ -1,37 +1,37 @@
 {
-  "date": "2025-12-08T20:00:00.000Z",
+  "date": "2025-12-09T18:22:05.931Z",
   "skins": [
     {
-      "id": "PLANET_OUTFITS",
+      "id": "a5eacd68-b73c-47fe-b3b2-005abf0c6420",
       "offerType": "AVATAR_ITEMS_SET",
-      "imageName": "PLANET_OUTFITS",
-      "imageUrl": "https://cdn2.wolvesville.com/promos/PLANET_OUTFITS@2x.jpg",
+      "imageName": "awakendemon",
+      "imageUrl": "https://cdn2.wolvesville.com/promos/awakendemon@2x.jpg",
       "price": 380,
-      "expireDate": "2025-12-09T03:00:00.000Z"
+      "expireDate": "2025-12-10T00:00:00.000Z"
     },
     {
-      "id": "CAT_OUTFITS",
+      "id": "4d290925-d77c-4595-ae51-447a56e39359",
       "offerType": "AVATAR_ITEMS_SET",
-      "imageName": "CAT_OUTFITS",
-      "imageUrl": "https://cdn2.wolvesville.com/promos/CAT_OUTFITS@2x.jpg",
+      "imageName": "kendo",
+      "imageUrl": "https://cdn2.wolvesville.com/promos/kendo@2x.jpg",
       "price": 380,
-      "expireDate": "2025-12-09T03:00:00.000Z"
+      "expireDate": "2025-12-10T00:00:00.000Z"
     },
     {
-      "id": "ZODIAC_OUTFITS",
+      "id": "ad05cb80-cfe5-11ea-b826-c77488ecb1a1",
       "offerType": "AVATAR_ITEMS_SET",
-      "imageName": "ZODIAC_OUTFITS",
-      "imageUrl": "https://cdn2.wolvesville.com/promos/ZODIAC_OUTFITS@2x.jpg",
+      "imageName": "necro",
+      "imageUrl": "https://cdn2.wolvesville.com/promos/necro@2x.jpg",
       "price": 380,
-      "expireDate": "2025-12-09T03:00:00.000Z"
+      "expireDate": "2025-12-10T00:00:00.000Z"
     },
     {
-      "id": "LOLITA_OUTFITS",
+      "id": "e47a95d2-2f8e-4b7f-8b57-bdcc7e3e8660",
       "offerType": "AVATAR_ITEMS_SET",
-      "imageName": "LOLITA_OUTFITS",
-      "imageUrl": "https://cdn2.wolvesville.com/promos/LOLITA_OUTFITS@2x.jpg",
+      "imageName": "bloodism",
+      "imageUrl": "https://cdn2.wolvesville.com/promos/bloodism@2x.jpg",
       "price": 380,
-      "expireDate": "2025-12-09T03:00:00.000Z"
+      "expireDate": "2025-12-10T00:00:00.000Z"
     }
   ]
 }
